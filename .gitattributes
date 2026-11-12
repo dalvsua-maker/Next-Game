@@ -1,0 +1,9 @@
+# Saltos de línea LF en el repositorio aunque se trabaje en Windows
+* text=auto eol=lf
+
+# Datos generados por tools/build_data.py: sin diffs y marcados como generados en GitHub
+public/data/** -text -diff linguist-generated=true
+
+*.png binary
+*.jpg binary
+*.ico binary

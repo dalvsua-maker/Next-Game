@@ -1,0 +1,29 @@
+# Fuentes descargadas por tools/fetch_sources.py (cientos de MB, se regeneran)
+sources/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node (por si se añaden herramientas)
+node_modules/
+
+# Editores y sistema operativo
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker y entorno local
+docker-compose.override.yml
+database.sqlite
+.env
+
+# Varios
+*.log
+*.zip
+_to_delete/

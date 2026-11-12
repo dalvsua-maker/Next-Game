@@ -1,0 +1,21 @@
+# Próxima Partida + rawg-to-steam-redirect
+# Arranque:  docker compose up -d   ->  http://localhost:8080
+services:
+  r2s:
+    # https://github.com/Phalcode/rawg-to-steam-redirect (imita la API de RAWG con datos de Steam)
+    image: phalcode/rawg-to-steam-redirect:latest
+    environment:
+      R2S_LANG: english
+    restart: unless-stopped
+
+  web:
+    image: nginx:1.27-alpine
+    depends_on:
+      - r2s
+    ports:
+      - "8080:80"
+    volumes:
+      # Solo se publica la carpeta public (nunca .git, tools ni sources)
+      - ./public:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
