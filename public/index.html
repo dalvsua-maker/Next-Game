@@ -33,6 +33,7 @@
   </header>
 
   <div class="moodbar"><span class="lab">Ambientes</span><div class="moods" id="moods"></div></div>
+  <div class="simbar" id="simbar" hidden></div>
 
   <div class="layout">
     <aside class="filters" id="filters" aria-label="Filtros">
@@ -81,6 +82,7 @@
           <label class="toggle"><input type="checkbox" id="f-linux"> PC con versión Linux nativa</label></div>
         <p class="hintline" id="discInfo"></p>
       </div>
+      <div class="fclose"><button class="btn primary" type="button" id="filtersClose">Ver resultados</button></div>
     </aside>
     <div class="scrim" id="scrim"></div>
 
@@ -96,7 +98,7 @@
             <div class="controls"><button class="btn" id="dailyBtn" type="button">Juego del día</button><button class="btn" id="surpriseBtn" type="button">Sorpresa sin filtros</button><button class="btn round" id="soundBtn" type="button" aria-label="Sonido"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path id="soundWaves" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
           </div>
           <div id="reelArea"><div class="reelbox" id="reelbox"><div class="marker"></div><div class="strip" id="strip"></div></div></div>
-          <div id="wheelArea" hidden><div class="wheelwrap"><div class="wheelbox"><svg class="wpointer" viewBox="0 0 34 44" aria-hidden="true"><path d="M17 42L2 10A15 15 0 1 1 32 10Z" fill="var(--ink)"/><circle cx="17" cy="14" r="6" fill="var(--accent)"/></svg><canvas id="wheel" role="img" aria-label="Rueda con candidatos"></canvas></div></div></div>
+          <div id="wheelArea" hidden><div class="wheelwrap"><div class="wheelbox"><svg class="wpointer" viewBox="0 0 34 44" aria-hidden="true"><path d="M17 42L2 10A15 15 0 1 1 32 10Z" fill="var(--ink)"/><circle cx="17" cy="14" r="6" fill="var(--accent)"/></svg><canvas id="wheel" role="img" aria-label="Rueda con candidatos"></canvas></div></div><div id="wheelEmpty" hidden></div></div>
           <div class="controls" style="margin-top:20px"><button class="bigbtn" id="spinBtn" type="button">GIRAR</button></div>
         </div>
         <div class="lastrow"><span class="minilabel">Últimas tiradas</span><div class="thumbs" id="lastThumbs"></div></div>
@@ -128,12 +130,13 @@
 
       <!-- EXPLORAR -->
       <section class="view" id="view-explorar">
-        <div class="stagehead"><div><h1>Explorar</h1><p>Todo lo que encaja con tus filtros, en una estantería sin fin.</p></div><div class="pool"><strong class="poolN">—</strong><span class="poolSplit"></span></div></div>
+        <div class="stagehead"><div><h1>Explorar</h1><p>Todo lo que encaja con tus filtros, en una estantería sin fin. Aquí también salen los juegos que ya te tocaron.</p></div><div class="pool"><strong id="xPoolN">—</strong><span id="xPoolSplit"></span></div></div>
         <div class="toolbar">
           <input type="search" id="xSearch" placeholder="Buscar por nombre o estudio…" autocomplete="off" aria-label="Buscar">
-          <select id="xSort" aria-label="Orden"><option value="rand">Orden aleatorio</option><option value="score">Mejor valorados</option><option value="pop">Más populares</option><option value="new">Más recientes</option><option value="old">Más antiguos</option><option value="az">A–Z</option></select>
+          <select id="xSort" aria-label="Orden"><option value="sim" hidden>Más parecidos</option><option value="rand">Orden aleatorio</option><option value="score">Mejor valorados</option><option value="pop">Más populares</option><option value="new">Más recientes</option><option value="old">Más antiguos</option><option value="az">A–Z</option></select>
           <button class="btn" id="xShuffle" type="button">Barajar</button>
         </div>
+        <div class="xnotice" id="xNotice" hidden></div>
         <div class="grid" id="xGrid"></div>
         <div class="sentinel" id="xSentinel"></div>
       </section>
@@ -159,7 +162,7 @@
   <form method="dialog" class="sbox" id="sform">
     <h2>Capturas y tráileres</h2>
     <p>Las carátulas, fondos y logos se cargan solos: los de PC desde el CDN de Steam y los de consola desde libretro-thumbnails.</p>
-    <p>Las capturas, la descripción en español y los tráileres de PC vienen de Steam a través de <a href="https://github.com/Phalcode/rawg-to-steam-redirect" target="_blank" rel="noopener">rawg-to-steam-redirect</a>. Steam no deja que una página los pida directamente, así que hace falta ese servidor: arranca la versión con Docker (instrucciones en LEEME.txt) y abre <b>http://localhost:8080</b>.</p>
+    <p>Las capturas, la descripción en español y los tráileres de PC vienen de Steam a través de <a href="https://github.com/Phalcode/rawg-to-steam-redirect" target="_blank" rel="noopener">rawg-to-steam-redirect</a>. Steam no deja que una página los pida directamente, así que hace falta ese servidor: arranca la versión con Docker (instrucciones en el README) y abre <b>http://localhost:8080</b>.</p>
     <label class="fg"><span class="minilabel">Servidor rawg-to-steam</span><input type="text" id="r2sUrl" placeholder="auto" autocomplete="off" spellcheck="false"></label>
     <p class="hintline">Con “auto” se usa el servidor de Docker (misma dirección que la página) y, si no responde, la instancia pública rawg2steam.phalco.de. También puedes escribir otra dirección terminada en /api.</p>
     <div class="status" id="r2sStatus"></div>

@@ -50,6 +50,7 @@ public/                 Web estática (lo único que se publica)
     pc.js               83.321 juegos de PC
     retro.js            34.070 juegos de 29 consolas
     desc/*.js           Descripciones, se cargan bajo demanda
+tests/                  Pruebas automáticas (navegador, datos y scripts)
 tools/                  Scripts para regenerar los datos (Python 3.9+)
   fetch_sources.py      Descarga las fuentes en sources/
   build_data.py         Genera public/data a partir de sources/
@@ -60,6 +61,19 @@ nginx.conf
 ```
 
 Los datos van en ficheros `.js` (no `.json`) para que la web funcione también abriendo `index.html` directamente, sin servidor.
+
+## Pruebas
+
+Hay tres grupos de pruebas. Las de la web abren Chromium de verdad y recorren todos los modos (ruleta, cartas, duelo, Explorar, Mi lista, ficha, ajustes y móvil). No necesitan internet porque simulan Steam, GitHub y las fuentes.
+
+```bash
+npm install                        # instala Playwright (solo la primera vez)
+npx playwright install chromium    # descarga el navegador (solo la primera vez)
+npm test                           # web + coherencia de los datos (~1 minuto)
+npm run test:tools                 # scripts de Python de tools/
+```
+
+Conviene pasarlas después de cada cambio y siempre después de regenerar el catálogo.
 
 ## Regenerar el catálogo
 

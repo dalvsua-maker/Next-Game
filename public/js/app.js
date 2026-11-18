@@ -29,14 +29,20 @@ const MOODS=[
 
 /* ===================== estado ===================== */
 const NOW=new Date().getFullYear();
-const DEFAULTS={origin:"all",systems:[],genres:[],xgenres:[],tags:[],control:"any",players:"any",dur:"any",from:0,to:0,disc:"balanced",mix:60,score:"0",reviews:"0",price:"any",es:false,esvoz:false,nojp:false,norepeat:true,cover:false,adult:true,vr:true,early:false,linux:false,mood:""};
+// DEFAULTS está congelado: los filtros activos siempre son una copia (antes compartían las listas y
+// marcar un género cambiaba también los valores por defecto, así que «Restablecer» no los quitaba).
+const DEFAULTS=Object.freeze({origin:"all",systems:Object.freeze([]),genres:Object.freeze([]),xgenres:Object.freeze([]),tags:Object.freeze([]),control:"any",players:"any",dur:"any",from:0,to:0,disc:"balanced",mix:60,score:"0",reviews:"0",price:"any",es:false,esvoz:false,nojp:false,norepeat:true,cover:false,adult:true,vr:true,early:false,linux:false,mood:""});
+const freshFilters=()=>JSON.parse(JSON.stringify(DEFAULTS));
+const cloneF=f=>JSON.parse(JSON.stringify(f));
 const store={get(k,d){try{const v=localStorage.getItem("pp2:"+k);return v==null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem("pp2:"+k,JSON.stringify(v))}catch(e){}}};
-let F=Object.assign({},DEFAULTS,store.get("filters",{}));
-let LIST=store.get("list",[]);
-let DISC=new Set(store.get("discarded",[]));
-let HIST=store.get("history",[]);
-let CFG=Object.assign({sound:true,r2s:"auto",autoplay:false,steamApi:true,rstyle:"reel",cards:5,duel:8},store.get("cfg",{}));delete CFG.rawg;
-let PC,RETRO,ALL=[],BYID=new Map(),POOL=[],CUM=null,SIM=null,FL={},GI={},SYSK=[];
+const isObj=v=>v&&typeof v==="object"&&!Array.isArray(v);
+const asArr=v=>Array.isArray(v)?v:[];
+// Lo guardado se valida al arrancar (sanitizeFilters / loadSaved): datos corruptos o de otra versión no rompen la página.
+let F=freshFilters();
+let LIST=[],DISC=new Set(),HIST=[];
+let CFG=Object.assign({sound:true,r2s:"auto",autoplay:false,steamApi:true,rstyle:"reel",cards:5,duel:8},isObj(store.get("cfg",null))?store.get("cfg",{}):{});delete CFG.rawg;
+if(!["reel","wheel"].includes(CFG.rstyle))CFG.rstyle="reel";if(![3,5,7].includes(CFG.cards))CFG.cards=5;if(![4,8,16].includes(CFG.duel))CFG.duel=8;
+let PC,RETRO,ALL=[],BYID=new Map(),KEYS=new Map(),POOL=[],BROWSE=[],CUM=null,SIM=null,XALL=false,FL={},GI={},SYSK=[];
 let VIEW="ruleta";
 
 /* ===================== utilidades ===================== */
@@ -50,6 +56,44 @@ const sysOf=g=>RETRO.systems[g.sys];
 const platShort=g=>g.s?sysOf(g).short:(has(g,"gog")?"GOG":"PC");
 const devOf=g=>(g.s?RETRO.devs:PC.devs)[g.dv]||"";
 function save(){store.set("filters",F)}
+/* ---------- identificadores estables ----------
+   Mi lista, el historial y los descartados se guardan con una clave que no depende de la posición del juego en los
+   datos (steam:<appid>, gog:<nombre>, r:<consola>:<nombre>), así sobreviven a regenerar el catálogo con tools/. */
+function keyOf(g){return g.s?`r:${SYSK[g.sys]}:${g.lc}`:g.app?`steam:${g.app}`:`gog:${g.lc}`}
+function gameFrom(ref){if(typeof ref!=="string")return null;return /^[pr]\d+$/.test(ref)?BYID.get(ref)||null:KEYS.get(ref)||null}
+function saveList(){store.set("list",LIST.map(x=>({k:keyOf(BYID.get(x.id)),played:!!x.played})))}
+function saveHist(){store.set("history",HIST.map(id=>keyOf(BYID.get(id))))}
+function saveDisc(){store.set("discarded",[...DISC].map(id=>keyOf(BYID.get(id))))}
+function loadSaved(){
+  const ids=arr=>{const out=[];for(const r of asArr(arr)){const g=gameFrom(r);if(g&&!out.includes(g.id))out.push(g.id)}return out};
+  HIST=ids(store.get("history",[])).slice(0,120);
+  DISC=new Set(ids(store.get("discarded",[])));
+  LIST=[];for(const x of asArr(store.get("list",[]))){if(!isObj(x))continue;const g=gameFrom(x.k||x.id);if(g&&!LIST.some(y=>y.id===g.id))LIST.push({id:g.id,played:!!x.played})}
+  saveList();saveHist();saveDisc();   // migra el formato antiguo (posiciones) al nuevo
+}
+function sanitizeFilters(raw){
+  const f=freshFilters();if(!isObj(raw))return f;
+  const pick=(k,ok)=>{if(ok(raw[k]))f[k]=raw[k]};
+  const inList=list=>v=>list.includes(v);
+  pick("origin",inList(["all","pc","retro"]));
+  f.systems=asArr(raw.systems).filter(v=>SYSK.includes(v));
+  f.genres=asArr(raw.genres).filter(v=>Object.hasOwn(GI,v));
+  f.xgenres=asArr(raw.xgenres).filter(v=>Object.hasOwn(GI,v)&&!f.genres.includes(v));
+  f.tags=asArr(raw.tags).filter(v=>PC.tags.includes(v));
+  pick("control",inList(["any","pad","padany","kbm","mouse","kb"]));
+  pick("players",inList(["any","solo","coop","local","online","pvp"]));
+  pick("dur",inList(["any","short","mid","long","epic"]));
+  pick("disc",inList(["popular","balanced","gems","chaos"]));
+  pick("score",inList(["0","70","80","90","95"]));
+  pick("reviews",inList(["0","100","1000","10000"]));
+  pick("price",inList(["any","free","u5","u15","u30"]));
+  for(const k of ["from","to"])pick(k,v=>v===0||(Number.isInteger(v)&&v>=1975&&v<=NOW));
+  pick("mix",v=>Number.isInteger(v)&&v>=0&&v<=100);
+  for(const k of ["es","esvoz","nojp","norepeat","cover","adult","vr","early","linux"])pick(k,v=>typeof v==="boolean");
+  pick("mood",v=>v===""||MOODS.some(m=>m.k===v));
+  if(f.from&&f.to&&f.from>f.to)[f.from,f.to]=[f.to,f.from];
+  return f;
+}
 function svgI(name){return ICONS[name]||""}
 const ICONS={
  pad:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10a5 5 0 0 1 4.8 6.4l-1.2 4A2.6 2.6 0 0 1 16 18.6L14.6 16H9.4L8 18.6a2.6 2.6 0 0 1-4.6-1.2l-1.2-4A5 5 0 0 1 7 7z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7.5 10v3M6 11.5h3" stroke="currentColor" stroke-width="1.8"/><circle cx="16" cy="10.5" r="1.1" fill="currentColor"/><circle cx="18" cy="12.5" r="1.1" fill="currentColor"/></svg>',
@@ -80,6 +124,7 @@ async function load(){
   // muchos juegos para adultos no tienen etiquetas en el volcado: se marcan también por el nombre
   const ADULT_RE=/\b(hentai|nsfw|porn\w*|nude|nudity|lewd|erotic\w*|xxx|r18|strip ?poker)\b/i;
   ALL.forEach(g=>{BYID.set(g.id,g);g.lc=g.n.toLowerCase();if(ADULT_RE.test(g.n)){if(g.s)g.ad=1;else g.f|=1<<FL.adult}});
+  ALL.forEach(g=>KEYS.set(keyOf(g),g));
 }
 const descCache={};
 function desc(g){
@@ -175,23 +220,29 @@ function buildFilters(){
   $("#moods").innerHTML=MOODS.map(m=>`<button class="mood" type="button" data-mood="${m.k}"><i style="background:${m.c}"></i>${m.n}</button>`).join("");
   renderTagChips();
 
-  $("#f-genres").addEventListener("click",e=>{const b=e.target.closest("[data-g]");if(!b)return;const g=b.dataset.g;
-    if(F.genres.includes(g)){F.genres=F.genres.filter(x=>x!==g);F.xgenres.push(g)}else if(F.xgenres.includes(g)){F.xgenres=F.xgenres.filter(x=>x!==g)}else F.genres.push(g);change()});
-  $("#f-sys").addEventListener("click",e=>{const b=e.target.closest("[data-sys]");if(!b)return;tog("systems",b.dataset.sys);if(F.origin==="pc")F.origin="all";change()});
-  $("#f-tags").addEventListener("click",e=>{const b=e.target.closest("[data-tag]");if(!b)return;tog("tags",b.dataset.tag);change();renderTagChips()});
+  // Cualquier cambio a mano desmarca el ambiente (los filtros se quedan): el chip solo se ve activo si describe los filtros.
+  const user=fn=>(...a)=>{fn(...a);F.mood="";change()};
+  $("#f-genres").addEventListener("click",e=>{const b=e.target.closest("[data-g]");if(!b)return;const g=b.dataset.g;user(()=>{
+    if(F.genres.includes(g)){F.genres=F.genres.filter(x=>x!==g);F.xgenres=[...F.xgenres,g]}else if(F.xgenres.includes(g)){F.xgenres=F.xgenres.filter(x=>x!==g)}else F.genres=[...F.genres,g]})()});
+  $("#f-sys").addEventListener("click",e=>{const b=e.target.closest("[data-sys]");if(!b)return;user(()=>{tog("systems",b.dataset.sys);if(F.origin==="pc")F.origin="all"})()});
+  $("#f-tags").addEventListener("click",e=>{const b=e.target.closest("[data-tag]");if(!b)return;user(()=>tog("tags",b.dataset.tag))();renderTagChips()});
   $("#tagSearch").addEventListener("input",renderTagChips);
-  for(const [id,k] of [["#f-origin","origin"],["#f-dur","dur"],["#f-disc","disc"]])$(id).addEventListener("click",e=>{const b=e.target.closest("button");if(b){F[k]=b.dataset.v;change()}});
-  for(const [id,k] of [["#f-control","control"],["#f-players","players"],["#f-score","score"],["#f-reviews","reviews"],["#f-price","price"]])$(id).addEventListener("change",e=>{F[k]=e.target.value;change()});
-  $("#f-from").addEventListener("change",e=>{F.from=+e.target.value;change()});
-  $("#f-to").addEventListener("change",e=>{F.to=+e.target.value;change()});
-  $("#f-mix").addEventListener("input",e=>{F.mix=+e.target.value;change()});
-  for(const k of ["es","esvoz","nojp","norepeat","cover","adult","vr","early","linux"])$("#f-"+k).addEventListener("change",e=>{F[k]=e.target.checked;change()});
-  $("#reset").addEventListener("click",()=>{F=JSON.parse(JSON.stringify(DEFAULTS));SIM=null;change();renderTagChips()});
+  for(const [id,k] of [["#f-origin","origin"],["#f-dur","dur"],["#f-disc","disc"]])$(id).addEventListener("click",e=>{const b=e.target.closest("button");if(b)user(()=>{F[k]=b.dataset.v})()});
+  for(const [id,k] of [["#f-control","control"],["#f-players","players"],["#f-score","score"],["#f-reviews","reviews"],["#f-price","price"]])$(id).addEventListener("change",e=>user(()=>{F[k]=e.target.value})());
+  const years=()=>{if(F.from&&F.to&&F.from>F.to){[F.from,F.to]=[F.to,F.from];toast(`He ordenado los años: de ${F.from} a ${F.to}`)}};
+  $("#f-from").addEventListener("change",e=>user(()=>{F.from=+e.target.value;years()})());
+  $("#f-to").addEventListener("change",e=>user(()=>{F.to=+e.target.value;years()})());
+  $("#f-mix").addEventListener("input",e=>user(()=>{F.mix=+e.target.value})());
+  for(const k of ["es","esvoz","nojp","norepeat","cover","adult","vr","early","linux"])$("#f-"+k).addEventListener("change",e=>user(()=>{F[k]=e.target.checked})());
+  $("#reset").addEventListener("click",()=>{const undo=snapshot();F=freshFilters();SIM=null;change();renderTagChips();toast("Filtros restablecidos",undo)});
   $("#moods").addEventListener("click",e=>{const b=e.target.closest("[data-mood]");if(!b)return;const m=MOODS.find(x=>x.k===b.dataset.mood);
-    if(F.mood===m.k){F=JSON.parse(JSON.stringify(DEFAULTS))}else{F=Object.assign(JSON.parse(JSON.stringify(DEFAULTS)),JSON.parse(JSON.stringify(m.f)),{mood:m.k})}
-    SIM=null;change();renderTagChips();toast(F.mood?`Ambiente: ${m.n}`:"Ambiente quitado")});
+    const undo=snapshot();
+    if(F.mood===m.k){F=freshFilters()}else{F=Object.assign(freshFilters(),cloneF(m.f),{mood:m.k})}
+    SIM=null;change();renderTagChips();toast(F.mood?`Ambiente: ${m.n}`:"Ambiente quitado",undo)});
 }
-function tog(k,v){const a=F[k],i=a.indexOf(v);if(i<0)a.push(v);else a.splice(i,1)}
+// Foto de filtros + «Parecidos» para poder deshacer cambios grandes (ambientes, restablecer, etiquetas desde la ficha)
+function snapshot(){const f=cloneF(F),sim=SIM,sort=$("#xSort").value;return()=>{F=f;SIM=sim;change();renderTagChips();if(sim&&sort==="sim")$("#xSort").value="sim";if(VIEW==="explorar")renderExplore(true)}}
+function tog(k,v){F[k]=F[k].includes(v)?F[k].filter(x=>x!==v):[...F[k],v]}
 let TAGCOUNT=null;
 function renderTagChips(){
   if(!TAGCOUNT){TAGCOUNT=new Array(PC.tags.length).fill(0);for(const g of ALL)if(g.s===0)for(const t of g.tg)TAGCOUNT[t]++}
@@ -213,16 +264,17 @@ function syncFilters(){
   $("#f-from").value=F.from;$("#f-to").value=F.to;$("#f-mix").value=F.mix;$("#mixLbl").textContent=`${F.mix} / ${100-F.mix}`;
   for(const k of ["es","esvoz","nojp","norepeat","cover","adult","vr","early","linux"])$("#f-"+k).checked=!!F[k];
   $("#sysWrap").hidden=F.origin==="pc";$("#sysHint").textContent=F.systems.length?F.systems.length+" marcadas":"todas";
-  const n=activeCount();for(const id of ["#fCount1","#fCount2"]){$(id).hidden=!n;$(id).textContent=n}
+  const n=activeCount()+(SIM?1:0);for(const id of ["#fCount1","#fCount2"]){$(id).hidden=!n;$(id).textContent=n}
+  renderSimbar();
   $("#discInfo").textContent=F.tags.length||F.dur!=="any"||F.esvoz?"Las etiquetas, la duración y las voces solo existen en juegos de PC, así que esos filtros dejan fuera las consolas.":"";
 }
 let chT=0;
-function change(){save();syncFilters();clearTimeout(chT);chT=setTimeout(()=>{rebuildPool();onPoolChange()},80)}
+function change(){save();XALL=false;syncFilters();clearTimeout(chT);chT=setTimeout(()=>{rebuildPool();onPoolChange()},80)}
 
 /* ===================== pool y sorteo ===================== */
+// passes() no mira el historial: "No repetir" solo afecta a los modos al azar (Ruleta, Cartas, Duelo), no a Explorar.
 function passes(g,x){
   if(DISC.has(g.id))return false;
-  if(F.norepeat&&x.seen.has(g.id))return false;
   if(F.origin==="pc"&&g.s)return false;
   if(F.origin==="retro"&&!g.s)return false;
   if(g.s&&x.sys&&!x.sys.has(g.sys))return false;
@@ -230,7 +282,7 @@ function passes(g,x){
   if(x.xgm&&(g.gm&x.xgm))return false;
   if(F.from&&(!g.y||g.y<F.from))return false;
   if(F.to&&(!g.y||g.y>F.to))return false;
-  if(SIM&&!similar(g,SIM))return false;
+  if(SIM&&!SIM.scores.has(g.id))return false;
   if(g.s===0){
     if(F.adult&&has(g,"adult"))return false;
     if(F.vr&&has(g,"vronly"))return false;
@@ -262,13 +314,72 @@ function passes(g,x){
   }
   return true;
 }
-function similar(g,t){
-  if(g.id===t.id||!(g.gm&t.gm))return false;
-  if(t.s===0&&g.s===0&&t.tg.length){let k=0;for(const x of g.tg)if(t.tg.includes(x))k++;return k>=Math.min(3,t.tg.length)}
-  if(t.s===1&&g.s===1)return sysOf(g).group===sysOf(t).group||Math.abs((g.y||0)-(t.y||0))<=4;
+/* ---------- parecidos ----------
+   Puntuación: misma saga (por el título) + etiquetas de Steam compartidas, ponderadas por lo raras que son
+   + géneros en común + mismo estudio. Entre PC y consola solo cuenta la misma saga.
+   Se guardan los SIM_MAX más parecidos de todo el catálogo; los filtros se aplican después. */
+const SIM_MAX=300;
+const STOPW=new Set(["the","a","an","of","and","de","la","el","los","las","le","les","del","to","in","on","for","y"]);
+const ROMAN=/^(\d+|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii)$/;
+function toks(g){return g._tk||(g._tk=g.n.toLowerCase().replace(/&/g," and ").normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g," ").trim().split(" ").filter(Boolean))}
+function sameSeries(a,b){
+  const x=toks(a),y=toks(b);let k=0;while(k<x.length&&k<y.length&&x[k]===y[k])k++;if(!k)return false;
+  const strong=x.slice(0,k).filter(w=>!STOPW.has(w)&&!/^\d+$/.test(w));
+  if(strong.length>=2)return true;                       // "Risk of Rain …", "Super Mario …", "Half-Life 2 …"
+  if(k!==Math.min(x.length,y.length)||!strong.length)return false;
+  const [sg,lg]=x.length<=y.length?[a,b]:[b,a];          // "Portal" / "Portal 2", "Celeste" / "Celeste: Farewell"
+  if(ROMAN.test(toks(lg)[k]))return true;
+  const ln=lg.n.toLowerCase(),sn=sg.n.toLowerCase().trim();
+  return ln.startsWith(sn)&&/^\s*[:\-–—]/.test(ln.slice(sn.length));
+}
+let TAG_IDF=null;
+function tagIdf(){if(TAG_IDF)return TAG_IDF;const df=new Array(PC.tags.length).fill(0);let n=0;for(const g of ALL)if(!g.s){n++;for(const t of g.tg)df[t]++}return TAG_IDF=df.map(d=>Math.log((n+1)/(d+1)))}
+const bitCount=m=>{let c=0;while(m){m&=m-1;c++}return c};
+function simScore(g,t){
+  if(g.id===t.id)return 0;
+  const series=sameSeries(g,t);
+  if(g.s!==t.s)return series?3:0;
+  const inter=bitCount(g.gm&t.gm),uni=bitCount(g.gm|t.gm),gj=uni?inter/uni:0;
+  let sc=0,ok=series;
+  if(g.s===0){
+    const w=tagIdf();let tot=0,sh=0;for(const x of t.tg){tot+=w[x];if(g.tg.includes(x))sh+=w[x]}
+    const ts=tot?sh/tot:0;
+    if(inter&&(t.tg.length>=2?ts>=.3:gj>=.6))ok=true;
+    sc=2*ts+1.5*gj;
+  }else{
+    const near=g.y&&t.y&&Math.abs(g.y-t.y)<=4,grp=sysOf(g).group===sysOf(t).group;
+    if(gj>=.5&&(grp||near))ok=true;
+    sc=1.5*gj+(grp?.4:0)+(near?.4:0)+(g.sys===t.sys?.3:0);
+  }
+  if(!ok)return 0;
+  if(series)sc+=3;
+  if(g.dv>=0&&g.dv===t.dv)sc+=.8;
+  return sc;
+}
+function findSimilar(t){
+  const res=[];for(const g of ALL){const v=simScore(g,t);if(v>0)res.push([g,v])}
+  res.sort((a,b)=>b[1]-a[1]||((b[0].rc||0)-(a[0].rc||0)));
+  return new Map(res.slice(0,SIM_MAX).map(([g,v])=>[g.id,v]));
+}
+function startSimilar(g){
+  const scores=findSimilar(g);
+  if(!scores.size){toast(`No he encontrado juegos parecidos a ${g.n}`);return false}
+  SIM={g,scores};XALL=false;$("#xSearch").value="";$("#xSort").value="sim";
+  setView("explorar");change();
   return true;
 }
+function stopSimilar(){if(!SIM)return;SIM=null;if($("#xSort").value==="sim")$("#xSort").value="rand";change()}
+function renderSimbar(){
+  const bar=$("#simbar");bar.hidden=!SIM;$("#xSort").querySelector('[value="sim"]').hidden=!SIM;
+  if(!SIM){bar.innerHTML="";delete bar.dataset.id;if($("#xSort").value==="sim")$("#xSort").value="rand";return}
+  if(bar.dataset.id===SIM.g.id)return;bar.dataset.id=SIM.g.id;
+  bar.innerHTML=`<div class="txt">Mostrando juegos parecidos a <b>${esc(SIM.g.n)}</b><small>Los ${fmt(SIM.scores.size)} más parecidos de todo el catálogo, ordenados por parecido. Tus filtros se siguen aplicando.</small></div><div class="acts"><button class="btn" type="button" data-a="ficha">Ver su ficha</button><button class="btn sun" type="button" data-a="quitar">Quitar</button></div>`;
+  bar.prepend(coverEl(SIM.g,{lazy:false,badge:false}));
+  bar.querySelector('[data-a="ficha"]').onclick=()=>openDetail(SIM.g,"Juego de referencia");
+  bar.querySelector('[data-a="quitar"]').onclick=stopSimilar;
+}
 function weight(g){
+  if(SIM){const v=SIM.scores.get(g.id)||0;return v*v}       // con "Parecidos" salen antes los más parecidos
   if(F.disc==="chaos"||F.disc==="gems")return 1;
   if(g.s===0){const q=Math.max(g.rp,0)/100,l=Math.log10(g.rc+1);return F.disc==="popular"?Math.pow(l,2.6)*q*q*q+0.002:Math.log10(g.rc+10)*Math.pow(0.25+q,2)}
   return (g.gm?1:0.45)*(g.y?1.15:1)*(g.dv>=0?1.15:1)*(g.tm&1?1.3:0.6);
@@ -277,25 +388,58 @@ function rebuildPool(){
   const x={seen:new Set(HIST),sys:F.systems.length?new Set(F.systems.map(k=>SYSK.indexOf(k))):null,
     gm:F.genres.reduce((m,g)=>m|(1<<GI[g]),0),xgm:F.xgenres.reduce((m,g)=>m|(1<<GI[g]),0),
     tags:F.tags.length?new Set(F.tags.map(t=>PC.tags.indexOf(t)).filter(i=>i>=0)):null};
-  POOL=ALL.filter(g=>passes(g,x));
+  BROWSE=ALL.filter(g=>passes(g,x));
+  POOL=F.norepeat?BROWSE.filter(g=>!x.seen.has(g.id)):BROWSE;
   let sp=0,sr=0;const w=new Float64Array(POOL.length);
   POOL.forEach((g,i)=>{w[i]=weight(g);if(g.s)sr+=w[i];else sp+=w[i]});
   if(sp>0&&sr>0){const share=Math.min(.99,Math.max(.01,F.mix/100));const k=(sp*(1-share)/share)/sr;POOL.forEach((g,i)=>{if(g.s)w[i]*=k})}
   CUM=new Float64Array(POOL.length);let acc=0;for(let i=0;i<w.length;i++){acc+=w[i];CUM[i]=acc}
-  const nr=POOL.reduce((a,g)=>a+g.s,0);
+  const nr=POOL.reduce((a,g)=>a+g.s,0),seen=BROWSE.length-POOL.length;
+  const seenTxt=seen?` · ${fmt(seen)} ya ${seen===1?"salió":"salieron"} (no se repiten)`:"";
   $$(".poolN").forEach(e=>e.textContent=fmt(POOL.length));
-  $$(".poolSplit").forEach(e=>e.textContent=POOL.length?`juegos encajan · PC ${fmt(POOL.length-nr)} · emulado ${fmt(nr)}`:"ningún juego encaja");
+  $$(".poolSplit").forEach(e=>e.textContent=(POOL.length?`juegos encajan · PC ${fmt(POOL.length-nr)} · emulado ${fmt(nr)}`:"ningún juego disponible")+seenTxt);
+  const fc=$("#filtersClose");if(fc)fc.textContent=`Ver ${fmt(POOL.length)} ${POOL.length===1?"juego":"juegos"}`;
 }
+// Por qué no hay juegos para sortear: ya salieron todos (No repetir) o los filtros no dejan ninguno.
+function emptyInfo(){
+  if(BROWSE.length&&!POOL.length)return{msg:`Ya te han salido los ${fmt(BROWSE.length)} juegos que encajan con tus filtros.`,acts:[["repeat","Permitir repetidos"],["clearhist","Vaciar historial"]]};
+  return{msg:SIM?"Ningún juego parecido encaja con tus filtros.":"Ningún juego encaja con estos filtros.",acts:SIM?[["nosim","Quitar «Parecidos»"],["reset","Restablecer filtros"]]:[["reset","Restablecer filtros"]]};
+}
+function emptyAction(a){
+  if(a==="repeat"){F.norepeat=false;change();toast("Ahora pueden repetirse juegos que ya salieron",()=>{F.norepeat=true;change()})}
+  if(a==="clearhist")clearHistory();
+  if(a==="nosim")stopSimilar();
+  if(a==="reset")$("#reset").click();
+}
+function emptyHTML(){const e=emptyInfo();return `<div class="empty nopool"><strong>${esc(e.msg)}</strong><div class="controls" style="margin-top:10px">${e.acts.map(([k,t])=>`<button class="btn" type="button" data-a="${k}">${t}</button>`).join("")}</div></div>`}
 function pick(){const t=Math.random()*CUM[CUM.length-1];let lo=0,hi=CUM.length-1;while(lo<hi){const m=(lo+hi)>>1;if(CUM[m]<t)lo=m+1;else hi=m}return POOL[lo]}
 function sample(n,exclude){const out=[],ids=new Set(exclude||[]);let tries=0;const want=Math.min(n,POOL.length-ids.size);while(out.length<want&&tries<n*30){tries++;const g=pick();if(!ids.has(g.id)){ids.add(g.id);out.push(g)}}return out}
-function noPool(){if(POOL.length)return false;toast("Ningún juego encaja con estos filtros. Prueba a quitar alguno.");return true}
+function noPool(){if(POOL.length)return false;const e=emptyInfo();toast(e.msg,()=>emptyAction(e.acts[0][0]),e.acts[0][1]);return true}
 function onPoolChange(){
-  if(VIEW==="ruleta"){if(!spinning){if(CFG.rstyle==="reel")buildReelIdle();else{WHEEL=sample(12);drawWheel()}}}
+  if(VIEW==="ruleta"){if(!spinning){if(CFG.rstyle==="reel")buildReelIdle();else wheelIdle()}}
   if(VIEW==="explorar")renderExplore(true);
 }
-function addHist(g){HIST=[g.id,...HIST.filter(x=>x!==g.id)].slice(0,120);store.set("history",HIST);renderLast()}
-function toggleFav(g){const i=LIST.findIndex(x=>x.id===g.id);if(i<0){LIST.unshift({id:g.id,played:false});toast("Guardado en tu lista")}else LIST.splice(i,1);store.set("list",LIST);$("#nList").textContent=LIST.length}
-function discard(g){DISC.add(g.id);store.set("discarded",[...DISC]);rebuildPool();toast("Descartado. No volverá a salir.",()=>{DISC.delete(g.id);store.set("discarded",[...DISC]);rebuildPool()})}
+// Con «No repetir» el sorteo se recalcula en cuanto sale un juego (antes no se hacía hasta tocar un filtro).
+function addHist(g){HIST=[g.id,...HIST.filter(x=>x!==g.id)].slice(0,120);saveHist();renderLast();if(F.norepeat)rebuildPool()}
+function clearHistory(){const old=HIST.slice();HIST=[];saveHist();rebuildPool();renderLast();refreshView();toast("Historial vaciado",()=>{HIST=old;saveHist();rebuildPool();renderLast();refreshView()})}
+function toggleFav(g){
+  const i=LIST.findIndex(x=>x.id===g.id);
+  if(i<0){LIST.unshift({id:g.id,played:false});saveList();toast("Guardado en tu lista")}
+  else{const [old]=LIST.splice(i,1);saveList();toast("Quitado de tu lista",()=>{LIST.splice(Math.min(i,LIST.length),0,old);saveList();$("#nList").textContent=LIST.length;refreshView()})}
+  $("#nList").textContent=LIST.length;
+}
+// «No me interesa»: sale del sorteo, de Explorar y de Guardados. Se puede deshacer.
+function discard(g){
+  const li=LIST.findIndex(x=>x.id===g.id),saved=li>=0?LIST.splice(li,1)[0]:null;
+  DISC.add(g.id);saveDisc();saveList();$("#nList").textContent=LIST.length;rebuildPool();refreshView(g);
+  toast("Descartado. No volverá a salir.",()=>{DISC.delete(g.id);saveDisc();if(saved){LIST.splice(li,0,saved);saveList();$("#nList").textContent=LIST.length}rebuildPool();refreshView()});
+}
+// Vuelve a pintar la vista actual cuando cambia algo que muestra (lista, descartes…)
+function refreshView(removed){
+  if(VIEW==="lista")renderList();
+  if(VIEW==="explorar"){if($("#xSearch").value.trim()||!removed)renderExplore(true);else{$$(`#xGrid .tile[data-id="${removed.id}"]`).forEach(t=>t.remove());$("#xPoolN").textContent=fmt(Math.max(0,num($("#xPoolN").textContent)-1))}}
+}
+const num=s=>Number(String(s).replace(/\D/g,""))||0;
 
 /* ===================== sonido ===================== */
 let actx=null;
@@ -314,7 +458,7 @@ function renderStrip(items){
 }
 function setX(x){reelX=x;strip.style.transform=`translate3d(${x}px,0,0)`}
 function centerOn(i,jit=0){const step=itemW()+12,bw=reelbox.clientWidth;return -(i*step+itemW()/2-bw/2)+jit}
-function buildReelIdle(){if(!POOL.length){strip.innerHTML='<div class="empty" style="margin:auto">Ningún juego encaja con estos filtros.</div>';setX(0);return}
+function buildReelIdle(){reelbox.classList.toggle("isempty",!POOL.length);if(!POOL.length){strip.innerHTML=emptyHTML();setX(0);return}
   REEL=sample(Math.min(11,POOL.length));renderStrip(REEL);setX(centerOn(Math.floor(REEL.length/2)))}
 function spinReel(){
   if(spinning||noPool())return;audio();
@@ -324,7 +468,7 @@ function spinReel(){
   // conserva lo visible al principio para que el giro arranque sin saltos
   const items=prev.concat(fresh).slice(0,prev.length+fresh.length);
   const startIdx=Math.floor(prev.length/2),winIdx=Math.min(items.length-1,prev.length+Math.min(WIN,fresh.length-1));
-  REEL=items;renderStrip(items);spinning=true;$("#spinBtn").disabled=true;
+  REEL=items;reelbox.classList.remove("isempty");renderStrip(items);spinning=true;$("#spinBtn").disabled=true;
   const step=itemW()+12,x0=centerOn(startIdx),x1=centerOn(winIdx,(Math.random()-.5)*itemW()*.7);
   setX(x0);const dur=reduce?700:6200+Math.random()*1200,t0=performance.now();let lastI=-1;
   const frame=now=>{const p=Math.min(1,(now-t0)/dur),e=1-Math.pow(1-p,5);const x=x0+(x1-x0)*e;setX(x);
@@ -366,15 +510,17 @@ function spinWheel(){
   requestAnimationFrame(frame);
 }
 function setRStyle(v){CFG.rstyle=v;store.set("cfg",CFG);$$("#rStyle button").forEach(b=>b.setAttribute("aria-pressed",b.dataset.v===v));
-  $("#reelArea").hidden=v!=="reel";$("#wheelArea").hidden=v!=="wheel";if(v==="wheel"){sizeWheel();WHEEL=sample(12);drawWheel()}else buildReelIdle()}
+  $("#reelArea").hidden=v!=="reel";$("#wheelArea").hidden=v!=="wheel";if(v==="wheel")wheelIdle();else buildReelIdle()}
+// Rueda en reposo: candidatos nuevos o, si no hay juegos, el motivo y qué hacer (igual que el carrete)
+function wheelIdle(){sizeWheel();WHEEL=sample(12);drawWheel();const e=$("#wheelEmpty");e.hidden=!!POOL.length;e.innerHTML=POOL.length?"":emptyHTML()}
 function renderLast(){const el=$("#lastThumbs");el.innerHTML="";const items=HIST.slice(0,12).map(id=>BYID.get(id)).filter(Boolean);
   if(!items.length){el.innerHTML='<span class="hintline" style="grid-column:1/-1">Aquí aparecerán los juegos que te salgan.</span>';return}
   for(const g of items){const b=document.createElement("button");b.type="button";b.title=g.n;b.appendChild(coverEl(g,{badge:false}));b.onclick=()=>openDetail(g,"De tu historial");el.appendChild(b)}}
 
 /* ===================== CARTAS ===================== */
-let HAND=[],REROLLS=3;
+let HAND=[],REROLLS=3,FLIPPED=new Set();
 function deal(){
-  if(noPool())return;whoosh();HAND=sample(CFG.cards);REROLLS=3;renderHand(true);
+  if(noPool())return;whoosh();HAND=sample(CFG.cards);REROLLS=3;FLIPPED=new Set();renderHand(true);
 }
 function renderHand(anim){
   const el=$("#deal");el.innerHTML="";$("#rerolls").textContent=`Cambios: ${REROLLS}`;
@@ -384,10 +530,13 @@ function renderHand(anim){
     const info=document.createElement("div");info.className="info";
     info.innerHTML=`<h4>${esc(g.n)}</h4><div class="meta">${esc([platShort(g),g.y||"",genresOf(g).slice(0,2).map(x=>GENRE_ES[x]).join(", ")].filter(Boolean).join(" · "))}</div><div class="acts"><button type="button" data-a="re" ${REROLLS?"":"disabled"}>Cambiar</button><button type="button" class="go" data-a="go">Ficha</button></div>`;
     front.appendChild(info);
-    c.querySelector(".back").onclick=()=>{c.classList.add("flipped");whoosh();addHist(g)};
+    if(FLIPPED.has(i))c.classList.add("flipped");
+    c.querySelector(".back").onclick=()=>{c.classList.add("flipped");FLIPPED.add(i);whoosh();addHist(g)};
     info.querySelector('[data-a="go"]').onclick=()=>openDetail(g,"Tu carta");
-    info.querySelector('[data-a="re"]').onclick=()=>{if(!REROLLS)return;REROLLS--;const n=sample(1,HAND.map(x=>x.id))[0];if(!n)return;HAND[i]=n;renderHand();const nc=$("#deal").children[i];nc.classList.add("flipped");addHist(n)};
-    if(!anim&&c){} el.appendChild(c);
+    info.querySelector('[data-a="re"]').onclick=()=>{if(!REROLLS)return;const n=sample(1,HAND.map(x=>x.id))[0];
+      if(!n){toast("No quedan más juegos para cambiar esta carta");return}
+      REROLLS--;HAND[i]=n;FLIPPED.add(i);renderHand();addHist(n)};
+    el.appendChild(c);
     if(anim&&!reduce){c.style.opacity=0;c.style.transform="translateY(30px) rotate(-6deg)";setTimeout(()=>{c.style.transition="opacity .35s, transform .7s cubic-bezier(.3,1.3,.5,1)";c.style.opacity=1;c.style.transform=""},60+i*90);setTimeout(()=>{c.style.transition=""},900+i*90)}
   });
   if(!HAND.length)el.innerHTML='<div class="empty"><strong>Pulsa “Repartir”</strong>Saldrán cartas boca abajo con juegos que encajan con tus filtros.</div>';
@@ -399,7 +548,7 @@ function duelStart(){
   if(noPool())return;const n=CFG.duel;const ps=sample(n);if(ps.length<2){toast("Hacen falta al menos 2 juegos para un duelo.");return}
   BR={round:ps,next:[],i:0,total:ps.length-1,done:0};renderDuel();
 }
-function roundName(len){return len===2?"Final":len===4?"Semifinal":len===8?"Cuartos de final":"Octavos de final"}
+function roundName(len){return len<=2?"Final":len<=4?"Semifinal":len<=8?"Cuartos de final":"Octavos de final"}
 function renderDuel(){
   const el=$("#duelArea");
   if(!BR){el.innerHTML='<div class="empty"><strong>Pulsa “Nuevo duelo”</strong>Saldrán parejas de juegos y tú eliges cuál sigue. El último en pie es tu próxima partida.</div>';return}
@@ -407,7 +556,8 @@ function renderDuel(){
     const r=document.createElement("div");r.innerHTML=`<h3>CAMPEÓN DEL DUELO</h3><h2>${esc(g.n)}</h2><div class="meta" style="color:var(--muted);margin-bottom:14px">${esc([platShort(g),g.y||"",devOf(g)].filter(Boolean).join(" · "))}</div><div class="controls" style="justify-content:flex-start"><button class="btn primary" type="button" id="chOpen">Ver ficha</button><button class="btn" type="button" id="chAgain">Otro duelo</button></div>`;
     w.appendChild(r);el.appendChild(w);$("#chOpen").onclick=()=>openDetail(g,"Campeón del duelo");$("#chAgain").onclick=duelStart;return}
   const a=BR.round[BR.i],b=BR.round[BR.i+1];
-  el.innerHTML=`<div class="round"><span>${roundName(BR.round.length)}</span><span class="minilabel">combate ${BR.i/2+1} de ${BR.round.length/2}</span><span class="dots">${Array.from({length:BR.total},(_,k)=>`<i class="${k<BR.done?"done":""}"></i>`).join("")}</span></div><div class="duel"></div>`;
+  const fights=Math.floor(BR.round.length/2),bye=BR.round.length%2?" · uno pasa directo":"";
+  el.innerHTML=`<div class="round"><span>${roundName(BR.round.length)}</span><span class="minilabel">combate ${BR.i/2+1} de ${fights}${bye}</span><span class="dots">${Array.from({length:BR.total},(_,k)=>`<i class="${k<BR.done?"done":""}"></i>`).join("")}</span></div><div class="duel"></div>`;
   const d=el.querySelector(".duel");
   const mk=(g,side)=>{const f=document.createElement("div");f.className="fighter";
     const pa=document.createElement("button");pa.type="button";pa.className="pickarea";pa.title="Elegir este juego";pa.appendChild(coverEl(g,{lazy:false}));
@@ -435,23 +585,39 @@ function duelPick(side){
 let XLIST=[],XN=0,XSEED=Math.random()*1e9|0;
 function renderExplore(reset){
   const q=$("#xSearch").value.trim().toLowerCase(),s=$("#xSort").value;
-  let list=POOL;
-  if(q)list=list.filter(g=>g.lc.includes(q)||devOf(g).toLowerCase().includes(q));
+  const match=g=>g.lc.includes(q)||devOf(g).toLowerCase().includes(q);
+  let list=BROWSE,notice="";
+  if(q){
+    list=list.filter(match);
+    // "todo el catálogo" se salta los filtros, pero no la preferencia de ocultar contenido adulto
+    const everywhere=ALL.filter(g=>match(g)&&!(F.adult&&(g.s?g.ad:has(g,"adult")))),hidden=everywhere.length-list.length;
+    const shown=new Set(list.map(g=>g.id)),disc=everywhere.filter(g=>DISC.has(g.id)&&!shown.has(g.id)).length;
+    const why=SIM?"tus filtros o el modo «Parecidos»":"tus filtros",one=hidden===1;
+    const reason=disc===hidden?`${one?"lo":"los"} descartaste`:`${why} ${one?"lo ocultan":"los ocultan"}${disc?` (${fmt(disc)} ${disc===1?"lo descartaste":"los descartaste"})`:""}`;
+    if(XALL){list=everywhere;notice=`<span>Buscando <b>«${esc(q)}»</b> en todo el catálogo, sin filtros ni descartes.</span><button class="btn" type="button" data-x="back">Volver a mis filtros</button>`}
+    else if(hidden>0)notice=`<span><b>${fmt(hidden)}</b> ${one?"juego más coincide":"juegos más coinciden"} con «${esc(q)}», pero ${reason}.</span><button class="btn sun" type="button" data-x="all">${one?"Mostrarlo":"Mostrarlos"}</button>`;
+  }
+  const nb=$("#xNotice");nb.hidden=!notice;nb.innerHTML=notice;
+  if(notice){const b=nb.querySelector("[data-x]");b.onclick=()=>{XALL=b.dataset.x==="all";renderExplore(true)}}
   list=list.slice();
-  if(s==="rand"){const r=rng(XSEED);for(let i=list.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[list[i],list[j]]=[list[j],list[i]]}}
+  if(s==="sim"&&SIM)list.sort((a,b)=>(SIM.scores.get(b.id)||0)-(SIM.scores.get(a.id)||0)||((b.rc||0)-(a.rc||0)));
+  else if(s==="rand"){const r=rng(XSEED);for(let i=list.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[list[i],list[j]]=[list[j],list[i]]}}
   else if(s==="score")list.sort((a,b)=>((b.s?-1:b.rp*Math.min(1,Math.log10(b.rc+1)/3))-(a.s?-1:a.rp*Math.min(1,Math.log10(a.rc+1)/3))));
   else if(s==="pop")list.sort((a,b)=>(b.s?-1:b.rc)-(a.s?-1:a.rc));
   else if(s==="new")list.sort((a,b)=>(b.y||0)-(a.y||0));
   else if(s==="old")list.sort((a,b)=>(a.y||9999)-(b.y||9999));
   else if(s==="az")list.sort((a,b)=>a.n.localeCompare(b.n,"es"));
-  XLIST=list;XN=0;$("#xGrid").innerHTML=list.length?"":'<div class="empty" style="grid-column:1/-1"><strong>No hay resultados</strong>Cambia la búsqueda o los filtros.</div>';moreExplore();
+  const nr=list.reduce((a,g)=>a+g.s,0);$("#xPoolN").textContent=fmt(list.length);
+  $("#xPoolSplit").textContent=list.length?`${list.length===1?"juego":"juegos"} · PC ${fmt(list.length-nr)} · emulado ${fmt(nr)}`:"ningún juego";
+  const empty=SIM&&!q?`<strong>Ningún juego parecido encaja con tus filtros</strong>Prueba a quitar algún filtro o pulsa «Quitar» arriba para volver al catálogo completo.`:`<strong>No hay resultados</strong>Cambia la búsqueda o los filtros.`;
+  XLIST=list;XN=0;$("#xGrid").innerHTML=list.length?"":`<div class="empty" style="grid-column:1/-1">${empty}</div>`;moreExplore();
 }
 function tileEl(g,extra){
-  const b=document.createElement(extra?"div":"button");if(!extra)b.type="button";b.className="tile";
+  const b=document.createElement(extra?"div":"button");if(!extra)b.type="button";b.className="tile";b.dataset.id=g.id;
   const cv=coverEl(g);const n=document.createElement("div");n.className="nm";n.textContent=g.n;
   const m=document.createElement("div");m.className="meta";
   m.innerHTML=esc([g.s?sysOf(g).short:"PC",g.y||""].filter(Boolean).join(" · "))+(g.s===0&&g.rp>=0?` · <span class="sc">${g.rp}%</span>`:"");
-  if(extra){const open=document.createElement("button");open.type="button";open.style.cssText="border:0;padding:0;background:none;text-align:left;display:grid;gap:7px";open.append(cv,n);open.onclick=()=>openDetail(g,"De tu lista");b.append(open,m)}
+  if(extra){const open=document.createElement("button");open.type="button";open.style.cssText="border:0;padding:0;background:none;text-align:left;display:grid;gap:7px";open.append(cv,n);open.onclick=()=>openDetail(g,extra);b.append(open,m)}
   else{b.append(cv,n,m);b.onclick=()=>openDetail(g,"Explorando")}
   return b;
 }
@@ -465,14 +631,15 @@ function renderList(){
   const ids=LTAB==="list"?LIST.map(x=>x.id):LTAB==="hist"?HIST:[...DISC];
   const items=ids.map(id=>BYID.get(id)).filter(Boolean);
   if(!items.length){el.innerHTML=`<div class="empty" style="grid-column:1/-1"><strong>${LTAB==="list"?"Tu lista está vacía":LTAB==="hist"?"Aún no ha salido ningún juego":"No has descartado nada"}</strong>${LTAB==="list"?"Abre la ficha de un juego y pulsa “Guardar”.":LTAB==="hist"?"Gira la ruleta, reparte cartas o haz un duelo.":"Los juegos que marques con “No me interesa” aparecerán aquí."}</div>`;return}
-  for(const g of items){const t=tileEl(g,true);const acts=document.createElement("div");acts.className="listacts";
+  const kick={list:"De tu lista",hist:"De tu historial",disc:"Descartado"}[LTAB];
+  for(const g of items){const t=tileEl(g,kick);const acts=document.createElement("div");acts.className="listacts";
     if(LTAB==="list"){const x=LIST.find(x=>x.id===g.id);if(x.played)t.classList.add("played");
       acts.innerHTML=`<label><input type="checkbox" ${x.played?"checked":""}> Jugado</label><button type="button">Quitar</button>`;
-      acts.querySelector("input").onchange=e=>{x.played=e.target.checked;store.set("list",LIST);t.classList.toggle("played",x.played)};
+      acts.querySelector("input").onchange=e=>{x.played=e.target.checked;saveList();t.classList.toggle("played",x.played)};
       acts.querySelector("button").onclick=()=>{toggleFav(g);renderList()}}
-    else if(LTAB==="disc"){acts.innerHTML=`<button type="button">Recuperar</button>`;acts.querySelector("button").onclick=()=>{DISC.delete(g.id);store.set("discarded",[...DISC]);rebuildPool();renderList()}}
+    else if(LTAB==="disc"){acts.innerHTML=`<button type="button">Recuperar</button>`;acts.querySelector("button").onclick=()=>{DISC.delete(g.id);saveDisc();rebuildPool();renderList();toast(`${g.n} vuelve a poder salir`)}}
     t.appendChild(acts);el.appendChild(t)}
-  if(LTAB==="hist"){const b=document.createElement("div");b.style.gridColumn="1/-1";b.innerHTML='<button class="link" type="button">Vaciar historial</button>';b.querySelector("button").onclick=()=>{HIST=[];store.set("history",HIST);rebuildPool();renderList();renderLast()};el.prepend(b)}
+  if(LTAB==="hist"){const b=document.createElement("div");b.style.gridColumn="1/-1";b.innerHTML='<button class="link" type="button">Vaciar historial</button>';b.querySelector("button").onclick=clearHistory;el.prepend(b)}
 }
 
 /* ===================== MEDIOS EXTERNOS ===================== */
@@ -565,7 +732,7 @@ const enc=encodeURIComponent;
 function openDetail(g,kicker,opt={}){
   const duel=opt.duel&&BR&&!BR.champ?opt.duel:null;
   CUR=g;const dl=$("#detail"),sh=$("#dsheet");sh.scrollTop=0;
-  try{history.replaceState(null,"","#"+(g.s?"r-":"p-")+g.i)}catch(e){}
+  try{history.replaceState(null,"","#"+(g.s===0&&g.app?"steam-"+g.app:(g.s?"r-":"p-")+g.i))}catch(e){}
   setAmbient(g);
   const gs=genresOf(g),plat=g.s?sysOf(g).label:(has(g,"gog")?"PC · GOG":"PC · Steam"),dv=devOf(g),fav=LIST.some(x=>x.id===g.id);
   const rows=[["Controles",controlsHTML(g)],["Jugadores",esc(playersTxt(g))]];
@@ -618,12 +785,15 @@ function openDetail(g,kicker,opt={}){
     $("#aDuelGo").onclick=()=>{dl.close();duelPick(duel.side)};
     $("#aRival").onclick=()=>openDuelDetail(1-duel.side);
   }else{
-    $("#aSim").onclick=()=>{SIM=g;dl.close();change();toast(`Mostrando juegos parecidos a ${g.n}`,()=>{SIM=null;change()})};
+    $("#aSim").onclick=()=>{dl.close();startSimilar(g)};
     if(dv)$("#aDev").onclick=()=>{dl.close();setView("explorar");$("#xSearch").value=dv;renderExplore(true)};
     $("#aOther").onclick=()=>{if(noPool())return;const n=pick();addHist(n);openDetail(n,"Otro al azar")};
     $("#aNo").onclick=()=>{discard(g);dl.close()};
   }
-  if(!duel)sh.querySelectorAll(".tagl [data-tag]").forEach(b=>b.onclick=()=>{F=Object.assign(JSON.parse(JSON.stringify(DEFAULTS)),{tags:[b.dataset.tag],origin:"pc"});dl.close();change();renderTagChips();toast(`Filtrando por la etiqueta ${tagName(b.dataset.tag)}`)});
+  // Etiqueta: muestra en Explorar los juegos con esa etiqueta (sustituye filtros y «Parecidos»; se puede deshacer)
+  if(!duel)sh.querySelectorAll(".tagl [data-tag]").forEach(b=>b.onclick=()=>{const undo=snapshot();
+    F=Object.assign(freshFilters(),{tags:[b.dataset.tag],origin:"pc"});SIM=null;XALL=false;$("#xSearch").value="";
+    dl.close();setView("explorar");change();renderTagChips();toast(`Juegos con la etiqueta «${tagName(b.dataset.tag)}»`,undo)});
   // descripción
   desc(g).then(d=>{if(CUR!==g)return;const el=$("#ddesc");if(!el||el.dataset.es)return;let text="",extra="";
     if(g.s===0){text=Array.isArray(d)?d[0]:(d||"");if(Array.isArray(d)&&d[1]){const a=[...sh.querySelectorAll(".links a")].find(x=>x.textContent.startsWith("GOG"));if(a)a.href=d[1]}}
@@ -672,12 +842,12 @@ async function renderMedia(g){
   if(imagesBlocked()){src.textContent="";return}
   if(g.s)src.textContent="Caja, pantalla de título y captura de libretro-thumbnails. El tráiler, con el botón de YouTube.";
   else if(from.length)src.textContent=`Capturas y tráileres: ${from.join(" y ")}.`;
-  else src.textContent=SERVED?"No ha llegado nada de Steam para este juego. Comprueba en Ajustes que el servidor responde.":"Para ver capturas y tráileres abre la versión de Docker (http://localhost:8080, mira LEEME.txt).";
+  else src.textContent=SERVED?"No ha llegado nada de Steam para este juego. Comprueba en Ajustes que el servidor responde.":"Para ver capturas y tráileres abre la versión de Docker (http://localhost:8080, mira el README).";
 }
 
 /* ===================== vistas, ajustes, toast ===================== */
 function setView(v){VIEW=v;$$(".modes button").forEach(b=>b.setAttribute("aria-selected",b.dataset.view===v));$$(".view").forEach(s=>s.classList.toggle("on",s.id==="view-"+v));
-  if(v==="ruleta"){if(CFG.rstyle==="wheel"){sizeWheel();if(!WHEEL.length)WHEEL=sample(12);drawWheel()}else if(!spinning)buildReelIdle()}
+  if(v==="ruleta"&&!spinning){if(CFG.rstyle==="wheel")wheelIdle();else buildReelIdle()}
   if(v==="cartas"&&!HAND.length)renderHand();
   if(v==="duelo")renderDuel();
   if(v==="explorar")renderExplore(true);
@@ -686,7 +856,7 @@ function setView(v){VIEW=v;$$(".modes button").forEach(b=>b.setAttribute("aria-s
 }
 function openFilters(){$("#filters").classList.add("open");$("#scrim").classList.add("on")}
 function closeFilters(){$("#filters").classList.remove("open");$("#scrim").classList.remove("on")}
-let tT=0;function toast(msg,undo){$("#toastTxt").textContent=msg;const b=$("#toastBtn");b.hidden=!undo;b.onclick=()=>{undo&&undo();$("#toast").classList.remove("on")};$("#toast").classList.add("on");clearTimeout(tT);tT=setTimeout(()=>$("#toast").classList.remove("on"),4200)}
+let tT=0;function toast(msg,action,label="Deshacer"){$("#toastTxt").textContent=msg;const b=$("#toastBtn");b.hidden=!action;b.textContent=label;b.onclick=()=>{$("#toast").classList.remove("on");action&&action()};$("#toast").classList.add("on");clearTimeout(tT);tT=setTimeout(()=>$("#toast").classList.remove("on"),action?7000:4200)}
 function daily(){const d=new Date(),key=d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate(),r=rng(key*7919);const retroDay=key%3===0;
   const c=ALL.filter(g=>retroDay?(g.s&&g.gm&&g.y&&g.dv>=0&&!g.ad&&(g.tm&1)):(!g.s&&g.rc>=3000&&g.rp>=88&&!has(g,"adult")&&!has(g,"vronly")));return c[Math.floor(r()*c.length)]}
 function surprise(){for(let k=0;k<50;k++){const g=ALL[Math.floor(Math.random()*ALL.length)];if(DISC.has(g.id))continue;if(g.s===0&&(has(g,"adult")||has(g,"vronly")))continue;if(g.s&&g.ad)continue;return g}return ALL[0]}
@@ -695,11 +865,15 @@ function openSettings(){$("#r2sUrl").value=CFG.r2s==="auto"?"":CFG.r2s;$("#autop
 /* ===================== arranque ===================== */
 async function boot(){
   try{await load()}catch(e){$("#bootMsg").textContent="No se pudo cargar el catálogo. Comprueba que la carpeta data está junto a index.html y recarga.";$(".spinner").remove();return}
+  F=sanitizeFilters(store.get("filters",null));save();loadSaved();
   buildFilters();syncFilters();rebuildPool();
   try{await document.fonts.ready}catch(e){}
   $("#boot").remove();$("#nList").textContent=LIST.length;
   $$(".modes button").forEach(b=>b.addEventListener("click",()=>setView(b.dataset.view)));
-  $("#filtersBtn").onclick=openFilters;$("#scrim").onclick=closeFilters;
+  $("#filtersBtn").onclick=openFilters;$("#scrim").onclick=closeFilters;$("#filtersClose").onclick=closeFilters;
+  document.addEventListener("keydown",e=>{if(e.key==="Escape"&&$("#filters").classList.contains("open"))closeFilters()});
+  // botones de «sin juegos» (ruleta vacía)
+  $("#main").addEventListener("click",e=>{const b=e.target.closest(".nopool [data-a]");if(b)emptyAction(b.dataset.a)});
   $("#settingsBtn").onclick=openSettings;
   $("#r2sTest").onclick=testConnection;
   $("#settings").addEventListener("close",()=>{if($("#settings").returnValue==="ok"){CFG.r2s=$("#r2sUrl").value.trim()||"auto";CFG.autoplay=$("#autoplay").checked;CFG.steamApi=$("#steamApi").checked;STATE.r2s=null;STATE.r2sDead.clear();STATE.getItemsDown=false;if(SERVED)STATE.proxy=undefined;store.set("cfg",CFG);mediaCache.clear();toast("Ajustes guardados")}});
@@ -718,7 +892,7 @@ async function boot(){
   $$("#dSize button").forEach(b=>{b.setAttribute("aria-pressed",+b.dataset.v===CFG.duel);b.onclick=()=>{CFG.duel=+b.dataset.v;store.set("cfg",CFG);$$("#dSize button").forEach(x=>x.setAttribute("aria-pressed",x===b));duelStart()}});
   $("#duelStart").onclick=duelStart;
   // explorar
-  let xs=0;$("#xSearch").addEventListener("input",()=>{clearTimeout(xs);xs=setTimeout(()=>renderExplore(true),200)});
+  let xs=0;$("#xSearch").addEventListener("input",()=>{clearTimeout(xs);xs=setTimeout(()=>{XALL=false;renderExplore(true)},200)});
   $("#xSort").onchange=()=>renderExplore(true);$("#xShuffle").onclick=()=>{XSEED=Math.random()*1e9|0;$("#xSort").value="rand";renderExplore(true)};
   new IntersectionObserver(es=>{if(es[0].isIntersecting&&VIEW==="explorar"&&XN<XLIST.length)moreExplore()},{rootMargin:"600px"}).observe($("#xSentinel"));
   // lista
@@ -732,7 +906,7 @@ async function boot(){
   });
   addEventListener("resize",()=>{if(CFG.rstyle==="wheel"){sizeWheel();drawWheel()}});
   renderLast();setRStyle(CFG.rstyle);setView("ruleta");
-  const m=/^#([pr])-(\d+)$/.exec(location.hash),fh=m&&BYID.get(m[1]+m[2]);if(fh)openDetail(fh,"Enlace compartido");
+  const m=/^#(?:steam-(\d+)|([pr])-(\d+))$/.exec(location.hash),fh=m&&(m[1]?KEYS.get("steam:"+m[1]):BYID.get(m[2]+m[3]));if(fh)openDetail(fh,"Enlace compartido");
 }
 boot();
 })();

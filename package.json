@@ -1,0 +1,13 @@
+{
+  "name": "proxima-partida",
+  "private": true,
+  "description": "Recomendador de juegos de PC y consolas emulables",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/data.test.js tests/e2e.test.js",
+    "test:datos": "node --test tests/data.test.js",
+    "test:tools": "python -m unittest discover -s tests -p \"test_*.py\" -v"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}
